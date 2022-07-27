@@ -11,6 +11,7 @@
 #define GLFW_INCLUDE_NONE
 #include "GLFW/glfw3.h"
 
+#include <stdio.h>
 #include <string.h>
 /* a uniform block with a model-view-projection matrix */
 typedef struct {
@@ -21,9 +22,15 @@ typedef struct {
     GLFWwindow * window;
     long frame;
     float *vertices;
-    float *temp_vertices;
+    long max_vertices;
     long num_vertices;
     int floats_per_vertex;
+    hmm_vec3 *path;
+    long max_path;
+    long num_path;
+    hmm_vec3 tail;
+    hmm_vec3 tail_tri[3];
+    hmm_vec3 up;
     sg_bindings bind;
     sg_pipeline pip;
     sg_pass_action pass_action;
@@ -54,48 +61,19 @@ void init(app_t * app) {
     sg_setup(&desc);
     assert(sg_isvalid());
 
-    /* cube vertex buffer */
-    float vertices[] = {
-        -1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-         1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-         1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-        -1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
+    app->max_path = 1000;
+    app->path = malloc(sizeof(hmm_vec3) * app->max_path);
+    app->num_path = 0;
+    app->tail = (hmm_vec3){}; 
 
-        -1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-         1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-         1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-        -1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
+    app->floats_per_vertex = 3;
+    app->max_vertices = app->max_path * 18;
+    app->num_vertices = 0;
+    size_t size = app->max_vertices * app->floats_per_vertex * sizeof(float);
+    app->vertices = malloc(size);
 
-        -1.0, -1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0,  1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0,  1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0, -1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
-
-        1.0, -1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0,  1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0,  1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0, -1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
-
-        -1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-        -1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-         1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-         1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-
-        -1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0,
-        -1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-         1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-         1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0
-    };
-    app->floats_per_vertex = 7;
-    app->num_vertices = sizeof(vertices) / (sizeof(float) * app->floats_per_vertex);
-    app->vertices = malloc(sizeof(vertices));
-    app->temp_vertices = malloc(sizeof(vertices));
-    memcpy(app->vertices, vertices, sizeof(vertices));
-    sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .data = SG_RANGE(app->vertices)
-    });
-
-    /* create an index buffer for the cube */
+/*
+    // create an index buffer for the cube
     uint16_t indices[] = {
         0, 1, 2,  0, 2, 3,
         6, 5, 4,  7, 6, 4,
@@ -109,11 +87,10 @@ void init(app_t * app) {
         .data = SG_RANGE(indices)
     });
 
-    /* resource bindings struct */
+    // resource bindings struct
     app->bind = (sg_bindings){
-        .vertex_buffers[0] = vbuf,
         .index_buffer = ibuf
-    };
+    };*/
 
     /* create shader */
     sg_shader shd = sg_make_shader(&(sg_shader_desc) {
@@ -130,18 +107,14 @@ void init(app_t * app) {
             "#version 330\n"
             "uniform mat4 mvp;\n"
             "layout(location=0) in vec4 position;\n"
-            "layout(location=1) in vec4 color0;\n"
-            "out vec4 color;\n"
             "void main() {\n"
             "  gl_Position = mvp * position;\n"
-            "  color = color0;\n"
             "}\n",
         .fs.source =
             "#version 330\n"
-            "in vec4 color;\n"
             "out vec4 frag_color;\n"
             "void main() {\n"
-            "  frag_color = color;\n"
+            "  frag_color = vec4(1.0, 0.0, 0.0, 1.0);\n"
             "}\n"
     });
 
@@ -149,18 +122,18 @@ void init(app_t * app) {
     app->pip = sg_make_pipeline(&(sg_pipeline_desc){
         .layout = {
             /* test to provide buffer stride, but no attr offsets */
-            .buffers[0].stride = 28,
+            .buffers[0].stride = app->floats_per_vertex * 4,
             .attrs = {
                 [0].format=SG_VERTEXFORMAT_FLOAT3,
-                [1].format=SG_VERTEXFORMAT_FLOAT4
             }
         },
         .shader = shd,
-        .index_type = SG_INDEXTYPE_UINT16,
+        .index_type = SG_INDEXTYPE_NONE,
         .depth = {
             .compare = SG_COMPAREFUNC_LESS_EQUAL,
             .write_enabled = true,
         },
+        .face_winding = SG_FACEWINDING_CCW,
         .cull_mode = SG_CULLMODE_BACK,
     });
 
@@ -181,29 +154,151 @@ float rand_float(float s) {
     return (rand() * s) / RAND_MAX;
 }
 
+hmm_vec3 rand_vec(float s) {
+    float h = s / 2.0f;
+    return (hmm_vec3) {
+        .X = rand_float(s) - h,
+        .Y = rand_float(s) - h,
+        .Z = rand_float(s) - h,
+    };
+}
+
+hmm_vec4 expand(hmm_vec3 a, float w) {
+    return (hmm_vec4) {
+        .X = a.X,
+        .Y = a.Y,
+        .Z = a.Z,
+        .W = w
+    };
+}
+
+hmm_vec3 truncate(hmm_vec4 a) {
+    return (hmm_vec3) {
+        .X = a.X,
+        .Y = a.Y,
+        .Z = a.Z
+    };    
+}
+
+hmm_mat4 mat_from_axes(
+    hmm_vec3 x,
+    hmm_vec3 y,
+    hmm_vec3 z,
+    hmm_vec3 t
+    ) {
+    hmm_mat4 Result = {0};
+
+    Result.Elements[0][0] = x.X;
+    Result.Elements[0][1] = x.Y;
+    Result.Elements[0][2] = x.Z;
+
+    Result.Elements[1][0] = y.X;
+    Result.Elements[1][1] = y.Y;
+    Result.Elements[1][2] = y.Z;
+
+    Result.Elements[2][0] = z.X;
+    Result.Elements[2][1] = z.Y;
+    Result.Elements[2][2] = z.Z;
+
+    Result.Elements[3][0] = t.X;
+    Result.Elements[3][1] = t.Y;
+    Result.Elements[3][2] = t.Z;
+    Result.Elements[3][3] = 1.0f;
+
+    return (Result);
+}
+
+hmm_vec3 transform(hmm_mat4 m, hmm_vec3 v) {
+    return truncate(HMM_MultiplyMat4ByVec4(m, expand(v, 1.0f)));
+}
+
 void update(app_t * app) {
     /* rotated model matrix */
     app->rx += 0.1f; app->ry += 0.2f;
-    long size = 
-        app->num_vertices * app->floats_per_vertex * sizeof(float);
+    const int N = 18;
 
-    memcpy(app->temp_vertices, app->vertices, size);
-
-    float delta = 1.0f + 0.1f * cos(app->frame * 00.1f);
-
-    for(int i = 0; i < app->num_vertices; i++) {
-        int offset = i * app->floats_per_vertex;
-        for (int j = 0; j < 3; j++) {
-            app->temp_vertices[offset + j] =
-                app->vertices[offset + j] * delta;
-        }
+    if (app->frame % 60 != 0) {
+        return;
     }
 
-    sg_destroy_buffer(app->bind.vertex_buffers[0]);
+    if (app->num_vertices + N > app->max_vertices) {
+        return;
+    }
+
+    if (app->num_path + 1 > app->max_path) {
+        return;
+    }
+    // a 2D triangle
+    const float pi = 3.1416f;
+    float a = cos(pi / 3.0f);
+    float b = sin(pi / 3.0f);
+    hmm_vec3 va = HMM_MultiplyVec3f((hmm_vec3){0.0f, 0.0f, -1.0f}, 0.1f);
+    hmm_vec3 vb = HMM_MultiplyVec3f((hmm_vec3){  -b, 0.0f,     a}, 0.1f);
+    hmm_vec3 vc = HMM_MultiplyVec3f((hmm_vec3){   b, 0.0f,     a}, 0.1f);
+ 
+    hmm_vec3 path = {.X = 0, .Y = 1.0f, .Z = 0.0f};
+    hmm_vec3 up = {.X = 0, .Y = 0.0f, .Z = 1.0f};
+    hmm_vec3 tri[3] = {va, vb, vc};
+    if (app->num_path > 0) {
+        path = app->path[app->num_path - 1];
+        memcpy(tri, app->tail_tri, sizeof(tri));
+        up = app->up;
+    }
+    // perturb direction randomly
+    path = HMM_MultiplyVec3f( 
+        HMM_NormalizeVec3(HMM_AddVec3(
+            HMM_NormalizeVec3(path), rand_vec(1.0f))),
+        0.1f);
+    app->path[app->num_path] = path;
+    app->num_path++;
+    hmm_vec3 old_tail = app->tail;
+    app->tail = HMM_AddVec3(app->tail, path);
+
+    hmm_vec3 y = HMM_NormalizeVec3(path);
+    hmm_vec3 x = HMM_Cross(y, HMM_NormalizeVec3(up));
+    hmm_vec3 z = HMM_Cross(x, y);
+    hmm_mat4 m = mat_from_axes(x, y, z, app->tail);
+
+    app->up = z;
+
+    // a three sided cylinder
+    hmm_vec3 v0 = tri[0];
+    hmm_vec3 v1 = tri[1];
+    hmm_vec3 v2 = tri[2];
+    hmm_vec3 v01 = transform(m, va); 
+    hmm_vec3 v11 = transform(m, vb);
+    hmm_vec3 v21 = transform(m, vc);
+
+    app->tail_tri[0] = v01;
+    app->tail_tri[1] = v11;
+    app->tail_tri[2] = v21;
+
+    hmm_vec3 triangles[] = {
+        v0, v1, v01,
+        v1, v11, v01,
+        v1, v2, v11,
+        v2, v21, v11,
+        v2, v0, v21,
+        v0, v01, v21
+    };
+    assert(sizeof(triangles) / sizeof(hmm_vec3) == N);
+
+    memcpy(&app->vertices[app->num_vertices],
+        triangles, N * sizeof(hmm_vec3));
+
+    app->num_vertices += N * app->floats_per_vertex;
+    size_t size = 
+        app->num_vertices * app->floats_per_vertex * sizeof(float);
+
+    if (app->frame > 0) {
+        sg_destroy_buffer(app->bind.vertex_buffers[0]);
+    }
     sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .data = (sg_range){app->temp_vertices, size}
+        .data = (sg_range){app->vertices, size}
     });
-    app->bind.vertex_buffers[0] = vbuf;
+    app->bind = (sg_bindings) {
+        .vertex_buffers[0] = vbuf
+    };
 }
 
 void render(app_t * app) {
@@ -221,7 +316,7 @@ void render(app_t * app) {
     sg_apply_pipeline(app->pip);
     sg_apply_bindings(&app->bind);
     sg_apply_uniforms(SG_SHADERSTAGE_VS, 0, &SG_RANGE(vs_params));
-    sg_draw(0, 36, 1);
+    sg_draw(0, app->num_vertices, 1);
     sg_end_pass();
     sg_commit();
     glfwSwapBuffers(app->window);
@@ -231,7 +326,7 @@ void render(app_t * app) {
 
 void terminate(app_t *app) {
     free(app->vertices);
-    free(app->temp_vertices);
+    free(app->path);
     sg_shutdown();
     glfwTerminate();
 }

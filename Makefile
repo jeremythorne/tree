@@ -1,2 +1,2 @@
-tree:
-	cc tree.c -lGL -lglfw3 -lm -ldl -lpthread -lX11
+tree: tree.c
+	cc -o tree tree.c -g -lGL -lglfw3 -lm -ldl -lpthread -lX11
