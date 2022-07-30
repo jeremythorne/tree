@@ -19,18 +19,23 @@ typedef struct {
 } params_t;
 
 typedef struct {
+    hmm_vec3 position;
+    hmm_vec3 direction;
+    hmm_vec3 up;
+    bool is_leaf;
+    int last_path;
+} path_t;
+
+typedef struct {
     GLFWwindow * window;
     long frame;
     float *vertices;
     long max_vertices;
     long num_vertices;
     int floats_per_vertex;
-    hmm_vec3 *path;
+    path_t *path;
     long max_path;
     long num_path;
-    hmm_vec3 tail;
-    hmm_vec3 tail_tri[3];
-    hmm_vec3 up;
     sg_bindings bind;
     sg_pipeline pip;
     sg_pass_action pass_action;
@@ -62,9 +67,8 @@ void init(app_t * app) {
     assert(sg_isvalid());
 
     app->max_path = 1000;
-    app->path = malloc(sizeof(hmm_vec3) * app->max_path);
+    app->path = malloc(sizeof(path_t) * app->max_path);
     app->num_path = 0;
-    app->tail = (hmm_vec3){}; 
 
     app->floats_per_vertex = 3;
     app->max_vertices = app->max_path * 18;
@@ -212,20 +216,62 @@ hmm_vec3 transform(hmm_mat4 m, hmm_vec3 v) {
     return truncate(HMM_MultiplyMat4ByVec4(m, expand(v, 1.0f)));
 }
 
-void update(app_t * app) {
-    /* rotated model matrix */
-    app->rx += 0.1f; app->ry += 0.2f;
+void axes_from_dir_up(hmm_vec3 dir, hmm_vec3 up,
+                hmm_vec3 *x, hmm_vec3 *y, hmm_vec3 *z) {
+    *y = HMM_NormalizeVec3(dir);
+    *x = HMM_Cross(*y, HMM_NormalizeVec3(up));
+    *z = HMM_Cross(*x, *y);
+ }
+
+void new_path(app_t * app, int parent, int child) {
+    const path_t *path = &app->path[parent];
+    path_t *child_path = &app->path[child];
+    hmm_vec3 x, y, z;
+    axes_from_dir_up(path->direction, path->up, &x, &y, &z);
+    // perturb direction randomly
+    hmm_vec3 direction = HMM_MultiplyVec3f( 
+        HMM_NormalizeVec3(HMM_AddVec3(y, rand_vec(1.0f))),
+        0.1f);
+
+    *child_path = (path_t){
+        .position = HMM_AddVec3(path->position, path->direction),
+        .direction = direction,
+        .up = z,
+        .is_leaf = true,
+        .last_path = parent
+    };
+}
+
+void new_paths(app_t * app) {
+    if (app->num_path == 0) {
+        path_t *path = &app->path[0];
+        *path = (path_t){
+            .position =  (hmm_vec3){.X = 0, .Y = 0.0f, .Z = 0.0f},
+            .direction = (hmm_vec3){.X = 0, .Y = 1.0f, .Z = 0.0f},
+            .up =  (hmm_vec3){.X =  0, .Y = 0.0f, .Z = 1.0f},
+            .is_leaf = true,
+            .last_path = 0
+        };
+        app->num_path = 1;
+        return;
+    }
+
+    const int num_path = app->num_path;
+    for(int i = 0; i < num_path; i++) {
+        path_t *path = &app->path[i];
+        if (path->is_leaf) {
+            path->is_leaf = false;
+            if (app->num_path + 1 > app->max_path) {
+                continue;
+            }
+            new_path(app, i, app->num_path++);
+       }
+    }
+}
+
+void add_cylinder(app_t * app, const path_t * path) {
     const int N = 18;
-
-    if (app->frame % 60 != 0) {
-        return;
-    }
-
     if (app->num_vertices + N > app->max_vertices) {
-        return;
-    }
-
-    if (app->num_path + 1 > app->max_path) {
         return;
     }
     // a 2D triangle
@@ -236,42 +282,22 @@ void update(app_t * app) {
     hmm_vec3 vb = HMM_MultiplyVec3f((hmm_vec3){  -b, 0.0f,     a}, 0.1f);
     hmm_vec3 vc = HMM_MultiplyVec3f((hmm_vec3){   b, 0.0f,     a}, 0.1f);
  
-    hmm_vec3 path = {.X = 0, .Y = 1.0f, .Z = 0.0f};
-    hmm_vec3 up = {.X = 0, .Y = 0.0f, .Z = 1.0f};
-    hmm_vec3 tri[3] = {va, vb, vc};
-    if (app->num_path > 0) {
-        path = app->path[app->num_path - 1];
-        memcpy(tri, app->tail_tri, sizeof(tri));
-        up = app->up;
-    }
-    // perturb direction randomly
-    path = HMM_MultiplyVec3f( 
-        HMM_NormalizeVec3(HMM_AddVec3(
-            HMM_NormalizeVec3(path), rand_vec(1.0f))),
-        0.1f);
-    app->path[app->num_path] = path;
-    app->num_path++;
-    hmm_vec3 old_tail = app->tail;
-    app->tail = HMM_AddVec3(app->tail, path);
+    hmm_vec3 x, y, z;
+    const path_t *last_path = &app->path[path->last_path];
+    axes_from_dir_up(last_path->direction, last_path->up, &x, &y, &z);
+    hmm_mat4 m0 = mat_from_axes(x, y, z, path->position);
 
-    hmm_vec3 y = HMM_NormalizeVec3(path);
-    hmm_vec3 x = HMM_Cross(y, HMM_NormalizeVec3(up));
-    hmm_vec3 z = HMM_Cross(x, y);
-    hmm_mat4 m = mat_from_axes(x, y, z, app->tail);
-
-    app->up = z;
+    hmm_vec3 position = HMM_AddVec3(path->position, path->direction);
+    axes_from_dir_up(path->direction, path->up, &x, &y, &z);
+    hmm_mat4 m1 = mat_from_axes(x, y, z, position);
 
     // a three sided cylinder
-    hmm_vec3 v0 = tri[0];
-    hmm_vec3 v1 = tri[1];
-    hmm_vec3 v2 = tri[2];
-    hmm_vec3 v01 = transform(m, va); 
-    hmm_vec3 v11 = transform(m, vb);
-    hmm_vec3 v21 = transform(m, vc);
-
-    app->tail_tri[0] = v01;
-    app->tail_tri[1] = v11;
-    app->tail_tri[2] = v21;
+    hmm_vec3 v0 = transform(m0, va);
+    hmm_vec3 v1 = transform(m0, vb);
+    hmm_vec3 v2 = transform(m0, vc);
+    hmm_vec3 v01 = transform(m1, va); 
+    hmm_vec3 v11 = transform(m1, vb);
+    hmm_vec3 v21 = transform(m1, vc);
 
     hmm_vec3 triangles[] = {
         v0, v1, v01,
@@ -287,6 +313,18 @@ void update(app_t * app) {
         triangles, N * sizeof(hmm_vec3));
 
     app->num_vertices += N * app->floats_per_vertex;
+}
+
+void new_geometry(app_t * app) {
+    for(int i = 0; i < app->num_path; i++) {
+        path_t *path = &app->path[i];
+        if (path->is_leaf) {
+            add_cylinder(app, path);
+        }
+    }
+}
+
+void upload_vertices(app_t * app) {
     size_t size = 
         app->num_vertices * app->floats_per_vertex * sizeof(float);
 
@@ -299,6 +337,19 @@ void update(app_t * app) {
     app->bind = (sg_bindings) {
         .vertex_buffers[0] = vbuf
     };
+}
+
+void update(app_t * app) {
+    /* rotated model matrix */
+    app->rx += 0.1f; app->ry += 0.2f;
+
+    if (app->frame % 60 != 0) {
+        return;
+    }
+
+    new_paths(app);
+    new_geometry(app);
+    upload_vertices(app);
 }
 
 void render(app_t * app) {
