@@ -302,11 +302,14 @@ void new_paths(array_t * paths) {
         path_t *path = path_get(paths, i);;
         if (path->is_leaf) {
             path->is_leaf = false;
-            if (!array_can_alloc(paths, 1)) {
-                continue;
+            int n = rand_float(1.0f) < 0.07f ? 2 : 1;
+            for (int i = 0; i < n; i++) {
+                if (!array_can_alloc(paths, 1)) {
+                    continue;
+                }
+                new_path(path, path_alloc(paths, 1));
             }
-            new_path(path, path_alloc(paths, 1));
-       }
+        }
     }
 }
 
