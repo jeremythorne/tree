@@ -19,23 +19,28 @@ typedef struct {
 } params_t;
 
 typedef struct {
+    void * start;
+    int num;
+    int max;
+    int element_size;
+} array_t;
+
+struct path_s;
+
+typedef struct path_s {
     hmm_vec3 position;
     hmm_vec3 direction;
     hmm_vec3 up;
     bool is_leaf;
-    int last_path;
+    const struct path_s * last_path;
 } path_t;
 
 typedef struct {
     GLFWwindow * window;
     long frame;
-    float *vertices;
-    long max_vertices;
-    long num_vertices;
+    array_t vertices;
     int floats_per_vertex;
-    path_t *path;
-    long max_path;
-    long num_path;
+    array_t paths;
     sg_bindings bind;
     sg_pipeline pip;
     sg_pass_action pass_action;
@@ -43,6 +48,50 @@ typedef struct {
     float rx;
     float ry;
 } app_t;
+
+array_t array_create(int element_size, int num) {
+    return (array_t){
+        .start = malloc(element_size * num),
+        .num = 0,
+        .max = num,
+        .element_size = element_size  
+    };
+}
+
+void array_destroy(array_t *array) {
+    free(array->start);
+    array->start = NULL;
+    array->num = 0;
+    array->max = 0;
+}
+
+bool array_can_alloc(const array_t *array, int num) {
+    return array->num + num < array->max;
+}
+
+void * array_alloc(array_t * array, int num) {
+    void * start = array->start + array->num * array->element_size;
+    array->num += num;
+    return start;
+}
+
+path_t * path_alloc(array_t * array, int num) {
+    return (path_t *)array_alloc(array, num);
+}
+
+path_t * path_get(array_t * array, int index) {
+    path_t *p = array->start;
+    return &p[index];
+}
+
+hmm_vec3 * vertex_alloc(array_t * array, int num) {
+    return (hmm_vec3 *)array_alloc(array, num);
+}
+
+hmm_vec3 * vertex_get(array_t * array, int index) {
+    hmm_vec3 *p = array->start;
+    return &p[index];
+}
 
 void init(app_t * app) {
     const int WIDTH = 800;
@@ -66,15 +115,10 @@ void init(app_t * app) {
     sg_setup(&desc);
     assert(sg_isvalid());
 
-    app->max_path = 1000;
-    app->path = malloc(sizeof(path_t) * app->max_path);
-    app->num_path = 0;
+    app->paths = array_create(sizeof(path_t), 1000);
 
     app->floats_per_vertex = 3;
-    app->max_vertices = app->max_path * 18;
-    app->num_vertices = 0;
-    size_t size = app->max_vertices * app->floats_per_vertex * sizeof(float);
-    app->vertices = malloc(size);
+    app->vertices = array_create(sizeof(hmm_vec3), app->paths.max * 18);
 
 /*
     // create an index buffer for the cube
@@ -223,18 +267,16 @@ void axes_from_dir_up(hmm_vec3 dir, hmm_vec3 up,
     *z = HMM_Cross(*x, *y);
  }
 
-void new_path(app_t * app, int parent, int child) {
-    const path_t *path = &app->path[parent];
-    path_t *child_path = &app->path[child];
+void new_path(const path_t * parent, path_t * child) {
     hmm_vec3 x, y, z;
-    axes_from_dir_up(path->direction, path->up, &x, &y, &z);
+    axes_from_dir_up(parent->direction, parent->up, &x, &y, &z);
     // perturb direction randomly
     hmm_vec3 direction = HMM_MultiplyVec3f( 
         HMM_NormalizeVec3(HMM_AddVec3(y, rand_vec(1.0f))),
         0.1f);
 
-    *child_path = (path_t){
-        .position = HMM_AddVec3(path->position, path->direction),
+    *child = (path_t){
+        .position = HMM_AddVec3(parent->position, parent->direction),
         .direction = direction,
         .up = z,
         .is_leaf = true,
@@ -242,36 +284,35 @@ void new_path(app_t * app, int parent, int child) {
     };
 }
 
-void new_paths(app_t * app) {
-    if (app->num_path == 0) {
-        path_t *path = &app->path[0];
+void new_paths(array_t * paths) {
+    if (paths->num == 0) {
+        path_t *path = path_alloc(paths, 1);
         *path = (path_t){
             .position =  (hmm_vec3){.X = 0, .Y = 0.0f, .Z = 0.0f},
             .direction = (hmm_vec3){.X = 0, .Y = 1.0f, .Z = 0.0f},
             .up =  (hmm_vec3){.X =  0, .Y = 0.0f, .Z = 1.0f},
             .is_leaf = true,
-            .last_path = 0
+            .last_path = path
         };
-        app->num_path = 1;
         return;
     }
 
-    const int num_path = app->num_path;
+    const int num_path = paths->num;
     for(int i = 0; i < num_path; i++) {
-        path_t *path = &app->path[i];
+        path_t *path = path_get(paths, i);;
         if (path->is_leaf) {
             path->is_leaf = false;
-            if (app->num_path + 1 > app->max_path) {
+            if (!array_can_alloc(paths, 1)) {
                 continue;
             }
-            new_path(app, i, app->num_path++);
+            new_path(path, path_alloc(paths, 1));
        }
     }
 }
 
 void add_cylinder(app_t * app, const path_t * path) {
     const int N = 18;
-    if (app->num_vertices + N > app->max_vertices) {
+    if (!array_can_alloc(&app->vertices, N)) {
         return;
     }
     // a 2D triangle
@@ -283,7 +324,7 @@ void add_cylinder(app_t * app, const path_t * path) {
     hmm_vec3 vc = HMM_MultiplyVec3f((hmm_vec3){   b, 0.0f,     a}, 0.1f);
  
     hmm_vec3 x, y, z;
-    const path_t *last_path = &app->path[path->last_path];
+    const path_t *last_path = path->last_path;
     axes_from_dir_up(last_path->direction, last_path->up, &x, &y, &z);
     hmm_mat4 m0 = mat_from_axes(x, y, z, path->position);
 
@@ -309,15 +350,13 @@ void add_cylinder(app_t * app, const path_t * path) {
     };
     assert(sizeof(triangles) / sizeof(hmm_vec3) == N);
 
-    memcpy(&app->vertices[app->num_vertices],
+    memcpy(vertex_alloc(&app->vertices, N),
         triangles, N * sizeof(hmm_vec3));
-
-    app->num_vertices += N * app->floats_per_vertex;
 }
 
 void new_geometry(app_t * app) {
-    for(int i = 0; i < app->num_path; i++) {
-        path_t *path = &app->path[i];
+    for(int i = 0; i < app->paths.num; i++) {
+        path_t *path = path_get(&app->paths, i);
         if (path->is_leaf) {
             add_cylinder(app, path);
         }
@@ -326,13 +365,13 @@ void new_geometry(app_t * app) {
 
 void upload_vertices(app_t * app) {
     size_t size = 
-        app->num_vertices * app->floats_per_vertex * sizeof(float);
+        app->vertices.num * app->floats_per_vertex * sizeof(float);
 
     if (app->frame > 0) {
         sg_destroy_buffer(app->bind.vertex_buffers[0]);
     }
     sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .data = (sg_range){app->vertices, size}
+        .data = (sg_range){vertex_get(&app->vertices, 0), size}
     });
     app->bind = (sg_bindings) {
         .vertex_buffers[0] = vbuf
@@ -347,7 +386,7 @@ void update(app_t * app) {
         return;
     }
 
-    new_paths(app);
+    new_paths(&app->paths);
     new_geometry(app);
     upload_vertices(app);
 }
@@ -367,7 +406,7 @@ void render(app_t * app) {
     sg_apply_pipeline(app->pip);
     sg_apply_bindings(&app->bind);
     sg_apply_uniforms(SG_SHADERSTAGE_VS, 0, &SG_RANGE(vs_params));
-    sg_draw(0, app->num_vertices, 1);
+    sg_draw(0, app->vertices.num, 1);
     sg_end_pass();
     sg_commit();
     glfwSwapBuffers(app->window);
@@ -376,8 +415,8 @@ void render(app_t * app) {
 }
 
 void terminate(app_t *app) {
-    free(app->vertices);
-    free(app->path);
+    array_destroy(&app->vertices);
+    array_destroy(&app->paths);
     sg_shutdown();
     glfwTerminate();
 }
