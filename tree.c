@@ -31,6 +31,7 @@ typedef struct path_s {
     hmm_vec3 position;
     hmm_vec3 direction;
     hmm_vec3 up;
+    float radius;
     bool is_leaf;
     const struct path_s * last_path;
 } path_t;
@@ -267,7 +268,7 @@ void axes_from_dir_up(hmm_vec3 dir, hmm_vec3 up,
     *z = HMM_Cross(*x, *y);
  }
 
-void new_path(const path_t * parent, path_t * child) {
+void new_path(const path_t * parent, path_t * child, float radius) {
     hmm_vec3 x, y, z;
     axes_from_dir_up(parent->direction, parent->up, &x, &y, &z);
     // perturb direction randomly
@@ -279,6 +280,7 @@ void new_path(const path_t * parent, path_t * child) {
         .position = HMM_AddVec3(parent->position, parent->direction),
         .direction = direction,
         .up = z,
+        .radius = radius,
         .is_leaf = true,
         .last_path = parent
     };
@@ -289,8 +291,9 @@ void new_paths(array_t * paths) {
         path_t *path = path_alloc(paths, 1);
         *path = (path_t){
             .position =  (hmm_vec3){.X = 0, .Y = 0.0f, .Z = 0.0f},
-            .direction = (hmm_vec3){.X = 0, .Y = 1.0f, .Z = 0.0f},
+            .direction = (hmm_vec3){.X = 0, .Y = 0.1f, .Z = 0.0f},
             .up =  (hmm_vec3){.X =  0, .Y = 0.0f, .Z = 1.0f},
+            .radius = 0.3f,
             .is_leaf = true,
             .last_path = path
         };
@@ -303,11 +306,20 @@ void new_paths(array_t * paths) {
         if (path->is_leaf) {
             path->is_leaf = false;
             int n = rand_float(1.0f) < 0.07f ? 2 : 1;
+            float radius = path->radius * 0.95;
+            float radii[] = {radius, radius};
+
+            if (n == 2) {
+                radii[0] = (rand_float(0.5f) + 0.5f) * radius;
+                // sum of children = area of parent
+                radii[1] = sqrt(radius * radius - radii[0] * radii[0]);
+            }
+
             for (int i = 0; i < n; i++) {
                 if (!array_can_alloc(paths, 1)) {
                     continue;
                 }
-                new_path(path, path_alloc(paths, 1));
+                new_path(path, path_alloc(paths, 1), radii[i]);
             }
         }
     }
@@ -322,26 +334,28 @@ void add_cylinder(app_t * app, const path_t * path) {
     const float pi = 3.1416f;
     float a = cos(pi / 3.0f);
     float b = sin(pi / 3.0f);
-    hmm_vec3 va = HMM_MultiplyVec3f((hmm_vec3){0.0f, 0.0f, -1.0f}, 0.1f);
-    hmm_vec3 vb = HMM_MultiplyVec3f((hmm_vec3){  -b, 0.0f,     a}, 0.1f);
-    hmm_vec3 vc = HMM_MultiplyVec3f((hmm_vec3){   b, 0.0f,     a}, 0.1f);
+    hmm_vec3 va = (hmm_vec3){0.0f, 0.0f, -1.0f};
+    hmm_vec3 vb = (hmm_vec3){  -b, 0.0f,     a};
+    hmm_vec3 vc = (hmm_vec3){   b, 0.0f,     a};
  
     hmm_vec3 x, y, z;
     const path_t *last_path = path->last_path;
     axes_from_dir_up(last_path->direction, last_path->up, &x, &y, &z);
     hmm_mat4 m0 = mat_from_axes(x, y, z, path->position);
+    float r0 = last_path->radius;
 
     hmm_vec3 position = HMM_AddVec3(path->position, path->direction);
     axes_from_dir_up(path->direction, path->up, &x, &y, &z);
     hmm_mat4 m1 = mat_from_axes(x, y, z, position);
+    float r1 = path->radius;
 
     // a three sided cylinder
-    hmm_vec3 v0 = transform(m0, va);
-    hmm_vec3 v1 = transform(m0, vb);
-    hmm_vec3 v2 = transform(m0, vc);
-    hmm_vec3 v01 = transform(m1, va); 
-    hmm_vec3 v11 = transform(m1, vb);
-    hmm_vec3 v21 = transform(m1, vc);
+    hmm_vec3 v0 = transform(m0, HMM_MultiplyVec3f(va, r0));
+    hmm_vec3 v1 = transform(m0, HMM_MultiplyVec3f(vb, r0));
+    hmm_vec3 v2 = transform(m0, HMM_MultiplyVec3f(vc, r0));
+    hmm_vec3 v01 = transform(m1, HMM_MultiplyVec3f(va, r1)); 
+    hmm_vec3 v11 = transform(m1, HMM_MultiplyVec3f(vb, r1));
+    hmm_vec3 v21 = transform(m1, HMM_MultiplyVec3f(vc, r1));
 
     hmm_vec3 triangles[] = {
         v0, v1, v01,
