@@ -76,6 +76,10 @@ void * array_alloc(array_t * array, int num) {
     return start;
 }
 
+void array_clear(array_t * array) {
+    array->num = 0;
+}
+
 path_t * path_alloc(array_t * array, int num) {
     return (path_t *)array_alloc(array, num);
 }
@@ -116,7 +120,7 @@ void init(app_t * app) {
     sg_setup(&desc);
     assert(sg_isvalid());
 
-    app->paths = array_create(sizeof(path_t), 1000);
+    app->paths = array_create(sizeof(path_t), 5000);
 
     app->floats_per_vertex = 3;
     app->vertices = array_create(sizeof(hmm_vec3), app->paths.max * 18);
@@ -273,8 +277,10 @@ void new_path(const path_t * parent, path_t * child, float radius) {
     axes_from_dir_up(parent->direction, parent->up, &x, &y, &z);
     // perturb direction randomly
     hmm_vec3 direction = HMM_MultiplyVec3f( 
-        HMM_NormalizeVec3(HMM_AddVec3(y, rand_vec(1.0f))),
-        0.1f);
+        HMM_NormalizeVec3(HMM_AddVec3(
+                (hmm_vec3){.X = 0.0f, .Y = 0.1f, .Z = 0.0f}, // vertical tropism
+                HMM_AddVec3(y, rand_vec(1.0f)))),
+        0.05f);
 
     *child = (path_t){
         .position = HMM_AddVec3(parent->position, parent->direction),
@@ -285,6 +291,16 @@ void new_path(const path_t * parent, path_t * child, float radius) {
         .last_path = parent
     };
 }
+void radial_growth(array_t * paths) {
+    const int num_path = paths->num;
+    if (!array_can_alloc(paths, 1)) {
+        return;
+    }
+    for(int i = 0; i < num_path; i++) {
+        path_t *path = path_get(paths, i);
+        path->radius += 0.001f;
+    }
+}
 
 void new_paths(array_t * paths) {
     if (paths->num == 0) {
@@ -293,7 +309,7 @@ void new_paths(array_t * paths) {
             .position =  (hmm_vec3){.X = 0, .Y = 0.0f, .Z = 0.0f},
             .direction = (hmm_vec3){.X = 0, .Y = 0.1f, .Z = 0.0f},
             .up =  (hmm_vec3){.X =  0, .Y = 0.0f, .Z = 1.0f},
-            .radius = 0.3f,
+            .radius = 0.01f,
             .is_leaf = true,
             .last_path = path
         };
@@ -306,7 +322,7 @@ void new_paths(array_t * paths) {
         if (path->is_leaf) {
             path->is_leaf = false;
             int n = rand_float(1.0f) < 0.07f ? 2 : 1;
-            float radius = path->radius * 0.95;
+            float radius = 0.01f;
             float radii[] = {radius, radius};
 
             if (n == 2) {
@@ -372,11 +388,10 @@ void add_cylinder(app_t * app, const path_t * path) {
 }
 
 void new_geometry(app_t * app) {
+    array_clear(&app->vertices);
     for(int i = 0; i < app->paths.num; i++) {
         path_t *path = path_get(&app->paths, i);
-        if (path->is_leaf) {
-            add_cylinder(app, path);
-        }
+        add_cylinder(app, path);
     }
 }
 
@@ -403,6 +418,7 @@ void update(app_t * app) {
         return;
     }
 
+    radial_growth(&app->paths);
     new_paths(&app->paths);
     new_geometry(app);
     upload_vertices(app);
