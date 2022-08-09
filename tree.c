@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 /* a uniform block with a model-view-projection matrix */
 typedef struct {
     hmm_mat4 mvp;
@@ -32,6 +33,7 @@ typedef struct path_s {
     hmm_vec3 direction;
     hmm_vec3 up;
     float radius;
+    bool is_leader;
     bool is_leaf;
     const struct path_s * last_path;
 } path_t;
@@ -41,6 +43,7 @@ typedef struct {
     long frame;
     array_t vertices;
     int floats_per_vertex;
+    bool has_leader;
     array_t paths;
     sg_bindings bind;
     sg_pipeline pip;
@@ -103,6 +106,8 @@ void init(app_t * app) {
     const int HEIGHT = 600;
     app->frame = 0;
 
+    srand(time(0));
+
     /* create GLFW window and initialize GL */
     glfwInit();
     glfwWindowHint(GLFW_SAMPLES, 4);
@@ -123,6 +128,7 @@ void init(app_t * app) {
     app->paths = array_create(sizeof(path_t), 5000);
 
     app->floats_per_vertex = 3;
+    app->has_leader = true;
     app->vertices = array_create(sizeof(hmm_vec3), app->paths.max * 18);
 
 /*
@@ -207,6 +213,10 @@ float rand_float(float s) {
     return (rand() * s) / RAND_MAX;
 }
 
+bool rand_prob(float p) {
+    return rand_float(1.0f) < p;
+}
+
 hmm_vec3 rand_vec(float s) {
     float h = s / 2.0f;
     return (hmm_vec3) {
@@ -270,49 +280,58 @@ void axes_from_dir_up(hmm_vec3 dir, hmm_vec3 up,
     *y = HMM_NormalizeVec3(dir);
     *x = HMM_Cross(*y, HMM_NormalizeVec3(up));
     *z = HMM_Cross(*x, *y);
- }
+}
 
-void new_path(const path_t * parent, path_t * child, float radius) {
+void new_path(const path_t * parent, path_t * child, float radius, bool is_leader,
+        bool has_leader) {
     hmm_vec3 x, y, z;
     axes_from_dir_up(parent->direction, parent->up, &x, &y, &z);
     // perturb direction randomly
+    float perturb = is_leader ? 0.1f : 1.0f;
     hmm_vec3 direction = HMM_MultiplyVec3f( 
         HMM_NormalizeVec3(HMM_AddVec3(
                 (hmm_vec3){.X = 0.0f, .Y = 0.1f, .Z = 0.0f}, // vertical tropism
-                HMM_AddVec3(y, rand_vec(1.0f)))),
-        0.05f);
+                HMM_AddVec3(y, rand_vec(perturb)))),
+        is_leader || !has_leader ? 0.05f : 0.01f);
 
     *child = (path_t){
         .position = HMM_AddVec3(parent->position, parent->direction),
         .direction = direction,
         .up = z,
         .radius = radius,
+        .is_leader = is_leader,
         .is_leaf = true,
         .last_path = parent
     };
 }
-void radial_growth(array_t * paths) {
+
+void radial_growth(array_t * paths, bool has_leader) {
     const int num_path = paths->num;
     if (!array_can_alloc(paths, 1)) {
         return;
     }
     for(int i = 0; i < num_path; i++) {
         path_t *path = path_get(paths, i);
-        path->radius += 0.001f;
+        path->radius += path->is_leader || !has_leader ? 0.001f : 0.0001f;
     }
 }
 
-void new_paths(array_t * paths) {
+path_t the_shoot() {
+    return (path_t){
+        .position =  (hmm_vec3){.X = 0, .Y = 0.0f, .Z = 0.0f},
+        .direction = (hmm_vec3){.X = 0, .Y = 0.1f, .Z = 0.0f},
+        .up =  (hmm_vec3){.X =  0, .Y = 0.0f, .Z = 1.0f},
+        .radius = 0.01f,
+        .is_leader = true,
+        .is_leaf = true,
+    };
+}
+
+void new_paths(array_t * paths, bool has_leader) {
     if (paths->num == 0) {
         path_t *path = path_alloc(paths, 1);
-        *path = (path_t){
-            .position =  (hmm_vec3){.X = 0, .Y = 0.0f, .Z = 0.0f},
-            .direction = (hmm_vec3){.X = 0, .Y = 0.1f, .Z = 0.0f},
-            .up =  (hmm_vec3){.X =  0, .Y = 0.0f, .Z = 1.0f},
-            .radius = 0.01f,
-            .is_leaf = true,
-            .last_path = path
-        };
+        *path = the_shoot();
+        path->last_path = path;
         return;
     }
 
@@ -321,12 +340,18 @@ void new_paths(array_t * paths) {
         path_t *path = path_get(paths, i);;
         if (path->is_leaf) {
             path->is_leaf = false;
-            int n = rand_float(1.0f) < 0.07f ? 2 : 1;
+            int n = rand_prob(path->is_leader ? 0.2f : 0.05f) ? 2 : 1;
             float radius = 0.01f;
             float radii[] = {radius, radius};
-
+            bool child_is_leader = path->is_leader && has_leader;
+            bool is_leader[] = {child_is_leader, false};
+            if (path->is_leader && !child_is_leader) {
+                printf("stop leader\n");
+            }
+  
             if (n == 2) {
-                radii[0] = (rand_float(0.5f) + 0.5f) * radius;
+                radii[0] = path->is_leader ? radius :
+                    (rand_float(0.5f) + 0.5f) * radius;
                 // sum of children = area of parent
                 radii[1] = sqrt(radius * radius - radii[0] * radii[0]);
             }
@@ -335,7 +360,8 @@ void new_paths(array_t * paths) {
                 if (!array_can_alloc(paths, 1)) {
                     continue;
                 }
-                new_path(path, path_alloc(paths, 1), radii[i]);
+                new_path(path, path_alloc(paths, 1), radii[i], is_leader[i],
+                        has_leader);
             }
         }
     }
@@ -418,8 +444,9 @@ void update(app_t * app) {
         return;
     }
 
-    radial_growth(&app->paths);
-    new_paths(&app->paths);
+    radial_growth(&app->paths, app->has_leader);
+    app->has_leader = app->has_leader && rand_prob(0.99f);
+    new_paths(&app->paths, app->has_leader);
     new_geometry(app);
     upload_vertices(app);
 }
