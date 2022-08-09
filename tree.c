@@ -39,10 +39,16 @@ typedef struct path_s {
 } path_t;
 
 typedef struct {
+    hmm_vec3 position;
+    hmm_vec3 normal;
+} vertex_t;
+
+typedef struct {
     GLFWwindow * window;
     long frame;
     array_t vertices;
     int floats_per_vertex;
+    bool is_growing;
     bool has_leader;
     array_t paths;
     sg_bindings bind;
@@ -92,19 +98,18 @@ path_t * path_get(array_t * array, int index) {
     return &p[index];
 }
 
-hmm_vec3 * vertex_alloc(array_t * array, int num) {
-    return (hmm_vec3 *)array_alloc(array, num);
+vertex_t * vertex_alloc(array_t * array, int num) {
+    return (vertex_t *)array_alloc(array, num);
 }
 
-hmm_vec3 * vertex_get(array_t * array, int index) {
-    hmm_vec3 *p = array->start;
+vertex_t * vertex_get(array_t * array, int index) {
+    vertex_t *p = array->start;
     return &p[index];
 }
 
 void init(app_t * app) {
     const int WIDTH = 800;
     const int HEIGHT = 600;
-    app->frame = 0;
 
     srand(time(0));
 
@@ -117,7 +122,6 @@ void init(app_t * app) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     GLFWwindow* w = glfwCreateWindow(WIDTH, HEIGHT, "Sokol Cube GLFW", 0, 0);
     glfwMakeContextCurrent(w);
-    app->window = w;
     glfwSwapInterval(1);
 
     /* setup sokol_gfx */
@@ -125,11 +129,16 @@ void init(app_t * app) {
     sg_setup(&desc);
     assert(sg_isvalid());
 
-    app->paths = array_create(sizeof(path_t), 5000);
-
-    app->floats_per_vertex = 3;
-    app->has_leader = true;
-    app->vertices = array_create(sizeof(hmm_vec3), app->paths.max * 18);
+    int num_paths = 1000;
+    *app = (app_t){
+        .frame = 0,
+        .window = w,
+        .paths = array_create(sizeof(path_t), num_paths),
+        .floats_per_vertex = sizeof(vertex_t) / sizeof(float),
+        .is_growing = true,
+        .has_leader = true,
+        .vertices = array_create(sizeof(vertex_t), num_paths * 18)
+    };
 
 /*
     // create an index buffer for the cube
@@ -166,14 +175,22 @@ void init(app_t * app) {
             "#version 330\n"
             "uniform mat4 mvp;\n"
             "layout(location=0) in vec4 position;\n"
+            "layout(location=1) in vec3 normal;\n"
+            "out vec3 vnormal;\n" 
             "void main() {\n"
+            "  vnormal = normal;\n"
             "  gl_Position = mvp * position;\n"
             "}\n",
         .fs.source =
             "#version 330\n"
+            "in vec3 vnormal;\n"
             "out vec4 frag_color;\n"
             "void main() {\n"
-            "  frag_color = vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "  vec3 light_dir = vec3(0.5, -0.5, 0.0);\n"
+            "  vec3 light_colour = vec3(0.9, 0.9, 0.7);\n"
+            "  vec3 ambient_colour = vec3(0.7, 0.9, 0.9);\n"
+            "  float lambert = dot(light_dir, vnormal);\n"
+            "  frag_color = vec4(lambert * light_colour + ambient_colour, 1.0);\n"
             "}\n"
     });
 
@@ -184,6 +201,7 @@ void init(app_t * app) {
             .buffers[0].stride = app->floats_per_vertex * 4,
             .attrs = {
                 [0].format=SG_VERTEXFORMAT_FLOAT3,
+                [1].format=SG_VERTEXFORMAT_FLOAT3,
             }
         },
         .shader = shd,
@@ -201,7 +219,7 @@ void init(app_t * app) {
 
     /* view-projection matrix */
     hmm_mat4 proj = HMM_Perspective(60.0f, (float)WIDTH/(float)HEIGHT, 0.01f, 10.0f);
-    hmm_mat4 view = HMM_LookAt(HMM_Vec3(0.0f, 1.5f, 6.0f), HMM_Vec3(0.0f, 0.0f, 0.0f), HMM_Vec3(0.0f, 1.0f, 0.0f));
+    hmm_mat4 view = HMM_LookAt(HMM_Vec3(0.0f, 2.5f, 6.0f), HMM_Vec3(0.0f, 1.0f, 0.0f), HMM_Vec3(0.0f, 1.0f, 0.0f));
     app->view_proj = HMM_MultiplyMat4(proj, view);
 }
 
@@ -275,6 +293,10 @@ hmm_vec3 transform(hmm_mat4 m, hmm_vec3 v) {
     return truncate(HMM_MultiplyMat4ByVec4(m, expand(v, 1.0f)));
 }
 
+hmm_vec3 transform_normal(hmm_mat4 m, hmm_vec3 v) {
+    return truncate(HMM_MultiplyMat4ByVec4(m, expand(v, 0.0f)));
+}
+
 void axes_from_dir_up(hmm_vec3 dir, hmm_vec3 up,
                 hmm_vec3 *x, hmm_vec3 *y, hmm_vec3 *z) {
     *y = HMM_NormalizeVec3(dir);
@@ -288,11 +310,18 @@ void new_path(const path_t * parent, path_t * child, float radius, bool is_leade
     axes_from_dir_up(parent->direction, parent->up, &x, &y, &z);
     // perturb direction randomly
     float perturb = is_leader ? 0.1f : 1.0f;
+    float length = 0.01f;
+    if (is_leader) {
+        length = 0.05f;
+    } else if(!has_leader) {
+        length = 0.03f;
+    }
+
     hmm_vec3 direction = HMM_MultiplyVec3f( 
         HMM_NormalizeVec3(HMM_AddVec3(
                 (hmm_vec3){.X = 0.0f, .Y = 0.1f, .Z = 0.0f}, // vertical tropism
                 HMM_AddVec3(y, rand_vec(perturb)))),
-        is_leader || !has_leader ? 0.05f : 0.01f);
+                length);
 
     *child = (path_t){
         .position = HMM_AddVec3(parent->position, parent->direction),
@@ -327,12 +356,12 @@ path_t the_shoot() {
     };
 }
 
-void new_paths(array_t * paths, bool has_leader) {
+bool new_paths(array_t * paths, bool has_leader) {
     if (paths->num == 0) {
         path_t *path = path_alloc(paths, 1);
         *path = the_shoot();
         path->last_path = path;
-        return;
+        return true;
     }
 
     const int num_path = paths->num;
@@ -358,18 +387,19 @@ void new_paths(array_t * paths, bool has_leader) {
 
             for (int i = 0; i < n; i++) {
                 if (!array_can_alloc(paths, 1)) {
-                    continue;
+                    return false;
                 }
                 new_path(path, path_alloc(paths, 1), radii[i], is_leader[i],
                         has_leader);
             }
         }
     }
+    return true;
 }
 
-void add_cylinder(app_t * app, const path_t * path) {
+void add_cylinder(array_t * vertices, const path_t * path) {
     const int N = 18;
-    if (!array_can_alloc(&app->vertices, N)) {
+    if (!array_can_alloc(vertices, N)) {
         return;
     }
     // a 2D triangle
@@ -392,14 +422,14 @@ void add_cylinder(app_t * app, const path_t * path) {
     float r1 = path->radius;
 
     // a three sided cylinder
-    hmm_vec3 v0 = transform(m0, HMM_MultiplyVec3f(va, r0));
-    hmm_vec3 v1 = transform(m0, HMM_MultiplyVec3f(vb, r0));
-    hmm_vec3 v2 = transform(m0, HMM_MultiplyVec3f(vc, r0));
-    hmm_vec3 v01 = transform(m1, HMM_MultiplyVec3f(va, r1)); 
-    hmm_vec3 v11 = transform(m1, HMM_MultiplyVec3f(vb, r1));
-    hmm_vec3 v21 = transform(m1, HMM_MultiplyVec3f(vc, r1));
+    vertex_t v0 =  (vertex_t) {transform(m0, HMM_MultiplyVec3f(va, r0)), transform_normal(m0, va)};
+    vertex_t v1 =  (vertex_t) {transform(m0, HMM_MultiplyVec3f(vb, r0)), transform_normal(m0, vb)};
+    vertex_t v2 =  (vertex_t) {transform(m0, HMM_MultiplyVec3f(vc, r0)), transform_normal(m0, vc)};
+    vertex_t v01 = (vertex_t) {transform(m1, HMM_MultiplyVec3f(va, r1)), transform_normal(m1, va)}; 
+    vertex_t v11 = (vertex_t) {transform(m1, HMM_MultiplyVec3f(vb, r1)), transform_normal(m1, vb)};
+    vertex_t v21 = (vertex_t) {transform(m1, HMM_MultiplyVec3f(vc, r1)), transform_normal(m1, vc)};
 
-    hmm_vec3 triangles[] = {
+    vertex_t triangles[] = {
         v0, v1, v01,
         v1, v11, v01,
         v1, v2, v11,
@@ -407,17 +437,17 @@ void add_cylinder(app_t * app, const path_t * path) {
         v2, v0, v21,
         v0, v01, v21
     };
-    assert(sizeof(triangles) / sizeof(hmm_vec3) == N);
+    assert(sizeof(triangles) / sizeof(vertex_t) == N);
 
-    memcpy(vertex_alloc(&app->vertices, N),
-        triangles, N * sizeof(hmm_vec3));
+    memcpy(vertex_alloc(vertices, N),
+        triangles, N * sizeof(vertex_t));
 }
 
 void new_geometry(app_t * app) {
     array_clear(&app->vertices);
     for(int i = 0; i < app->paths.num; i++) {
         path_t *path = path_get(&app->paths, i);
-        add_cylinder(app, path);
+        add_cylinder(&app->vertices, path);
     }
 }
 
@@ -438,15 +468,20 @@ void upload_vertices(app_t * app) {
 
 void update(app_t * app) {
     /* rotated model matrix */
-    app->rx += 0.1f; app->ry += 0.2f;
+    // app->rx += 0.1f; 
+    app->ry += 0.2f;
 
     if (app->frame % 60 != 0) {
         return;
     }
 
     radial_growth(&app->paths, app->has_leader);
-    app->has_leader = app->has_leader && rand_prob(0.99f);
-    new_paths(&app->paths, app->has_leader);
+    app->has_leader = app->has_leader && rand_prob(0.98f);
+    bool is_growing = new_paths(&app->paths, app->has_leader);
+    if (!is_growing && app->is_growing) {
+        printf("stopped growing\n");
+    }
+    app->is_growing = is_growing;
     new_geometry(app);
     upload_vertices(app);
 }
