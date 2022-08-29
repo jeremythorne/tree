@@ -6,7 +6,7 @@
 #define HANDMADE_MATH_NO_SSE
 #include "HandmadeMath.h"
 #define SOKOL_IMPL
-#define SOKOL_GLCORE33
+#define SOKOL_GLES3
 #include "sokol_gfx.h"
 #define GLFW_INCLUDE_NONE
 #include "GLFW/glfw3.h"
@@ -115,11 +115,9 @@ void init(app_t * app) {
 
     /* create GLFW window and initialize GL */
     glfwInit();
-    glfwWindowHint(GLFW_SAMPLES, 4);
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
     GLFWwindow* w = glfwCreateWindow(WIDTH, HEIGHT, "Sokol Cube GLFW", 0, 0);
     glfwMakeContextCurrent(w);
     glfwSwapInterval(1);
@@ -172,7 +170,7 @@ void init(app_t * app) {
            we don't need to provide an attribute name lookup table in the shader
         */
         .vs.source =
-            "#version 330\n"
+            "#version 310 es\n"
             "uniform mat4 mvp;\n"
             "layout(location=0) in vec4 position;\n"
             "layout(location=1) in vec3 normal;\n"
@@ -182,7 +180,8 @@ void init(app_t * app) {
             "  gl_Position = mvp * position;\n"
             "}\n",
         .fs.source =
-            "#version 330\n"
+            "#version 310 es\n"
+            "precision mediump float;\n"
             "in vec3 vnormal;\n"
             "out vec4 frag_color;\n"
             "void main() {\n"

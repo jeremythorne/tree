@@ -2798,8 +2798,12 @@ inline int sg_append_buffer(sg_buffer buf_id, const sg_range& data) { return sg_
                 #include <GLES2/gl2ext.h>
             #endif
         #elif defined(__linux__) || defined(__unix__)
-            #define GL_GLEXT_PROTOTYPES
-            #include <GL/gl.h>
+            #if defined(SOKOL_GLES3)
+                #include <GLES3/gl3.h>
+            #else
+		#define GL_GLEXT_PROTOTYPES
+                #include <GL/gl.h>
+            #endif
         #endif
     #endif
 
