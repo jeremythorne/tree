@@ -57,8 +57,8 @@ void init(app_t * app) {
     *app = (app_t){
         .frame = 0,
         .window = w,
-	.renderer = renderer,
-	.paths = vec_path_t_init(),
+    .renderer = renderer,
+    .paths = vec_path_t_init(),
         .is_growing = true,
         .has_leader = true,
     };
@@ -120,10 +120,10 @@ path_t the_shoot() {
 bool new_paths(vec_path_t * paths, bool has_leader) {
     if (vec_path_t_empty(paths)) {
         path_t path = the_shoot();
-	vec_path_t_push_back(paths, path);
+    vec_path_t_push_back(paths, path);
         path_t *p = vec_path_t_back(paths);
-	p->last_path = 0;
-	return true;
+    p->last_path = 0;
+    return true;
     }
 
     const int num_paths = vec_path_t_size(paths);
@@ -148,7 +148,7 @@ bool new_paths(vec_path_t * paths, bool has_leader) {
             }
 
             for (int j = 0; j < n; j++) {
-		vec_path_t_push_back(paths, (path_t){});
+        vec_path_t_push_back(paths, (path_t){});
                 new_path(paths, i, vec_path_t_back(paths), radii[j], is_leader[j],
                         has_leader);
             }
@@ -169,21 +169,24 @@ void add_cylinder(renderer_t * renderer, const path_t * last_path, const path_t 
     float r1 = path->radius;
 
     renderer_add_cylinder(renderer, m0, r0, m1, r1);
+    if (path->is_leaf) {
+        renderer_add_leaves(renderer, m1, r1);
+    }
 }
 
 void new_geometry(app_t * app) {
     renderer_clear_vertices(app->renderer);
     foreach(vec_path_t, &app->paths, it) {
         path_t *path = it.ref;
-		path_t *last_path = vec_path_t_at(&app->paths, path->last_path);
+        path_t *last_path = vec_path_t_at(&app->paths, path->last_path);
         add_cylinder(app->renderer, last_path, path);
     }
 }
 
 void update(app_t * app) {
-	renderer_update(app->renderer);
+    renderer_update(app->renderer);
 
-	if (app->frame % 60 != 0) {
+    if (app->frame % 60 != 0) {
         return;
     }
 
@@ -208,7 +211,7 @@ void render(app_t * app) {
 }
 
 void terminate(app_t *app) {
-	renderer_free(&app->renderer);
+    renderer_free(&app->renderer);
     vec_path_t_free(&app->paths);
     glfwTerminate();
 }

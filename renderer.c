@@ -14,6 +14,7 @@ typedef struct {
 typedef struct {
     vec3s position;
     vec3s normal;
+    vec3s colour;
 } vertex_t;
 
 #define POD
@@ -92,22 +93,26 @@ renderer_t * renderer_init(int width, int height) {
             "uniform mat4 mvp;\n"
             "layout(location=0) in vec4 position;\n"
             "layout(location=1) in vec3 normal;\n"
+            "layout(location=2) in vec3 colour;\n"
             "out vec3 vnormal;\n" 
+            "out vec3 vcolour;\n" 
             "void main() {\n"
             "  vnormal = normal;\n"
+            "  vcolour = colour;\n"
             "  gl_Position = mvp * position;\n"
             "}\n",
         .fs.source =
             "#version 310 es\n"
             "precision mediump float;\n"
             "in vec3 vnormal;\n"
+            "in vec3 vcolour;\n"
             "out vec4 frag_color;\n"
             "void main() {\n"
             "  vec3 light_dir = vec3(0.5, -0.5, 0.0);\n"
             "  vec3 light_colour = vec3(0.9, 0.9, 0.7);\n"
             "  vec3 ambient_colour = vec3(0.7, 0.9, 0.9);\n"
             "  float lambert = dot(light_dir, vnormal);\n"
-            "  frag_color = vec4(lambert * light_colour + ambient_colour, 1.0);\n"
+            "  frag_color = vec4(vcolour * (lambert * light_colour + ambient_colour), 1.0);\n"
             "}\n"
     });
 
@@ -119,6 +124,7 @@ renderer_t * renderer_init(int width, int height) {
             .attrs = {
                 [0].format=SG_VERTEXFORMAT_FLOAT3,
                 [1].format=SG_VERTEXFORMAT_FLOAT3,
+                [2].format=SG_VERTEXFORMAT_FLOAT3,
             }
         },
         .shader = shd,
@@ -152,14 +158,15 @@ static void add_cylinder(vec_vertex_t * vertices, mat4s m0, float r0, mat4s m1, 
     vec3s va = (vec3s){0.0f, 0.0f, -1.0f};
     vec3s vb = (vec3s){  -b, 0.0f,     a};
     vec3s vc = (vec3s){   b, 0.0f,     a};
+    vec3s colour = (vec3s){1.0f, 1.0f, 1.0f};
  
     // a three sided cylinder
-    vertex_t v0 =  (vertex_t) {transform(m0, glms_vec3_scale(va, r0)), transform_normal(m0, va)};
-    vertex_t v1 =  (vertex_t) {transform(m0, glms_vec3_scale(vb, r0)), transform_normal(m0, vb)};
-    vertex_t v2 =  (vertex_t) {transform(m0, glms_vec3_scale(vc, r0)), transform_normal(m0, vc)};
-    vertex_t v01 = (vertex_t) {transform(m1, glms_vec3_scale(va, r1)), transform_normal(m1, va)}; 
-    vertex_t v11 = (vertex_t) {transform(m1, glms_vec3_scale(vb, r1)), transform_normal(m1, vb)};
-    vertex_t v21 = (vertex_t) {transform(m1, glms_vec3_scale(vc, r1)), transform_normal(m1, vc)};
+    vertex_t v0 =  (vertex_t) {transform(m0, glms_vec3_scale(va, r0)), transform_normal(m0, va), colour};
+    vertex_t v1 =  (vertex_t) {transform(m0, glms_vec3_scale(vb, r0)), transform_normal(m0, vb), colour};
+    vertex_t v2 =  (vertex_t) {transform(m0, glms_vec3_scale(vc, r0)), transform_normal(m0, vc), colour};
+    vertex_t v01 = (vertex_t) {transform(m1, glms_vec3_scale(va, r1)), transform_normal(m1, va), colour}; 
+    vertex_t v11 = (vertex_t) {transform(m1, glms_vec3_scale(vb, r1)), transform_normal(m1, vb), colour};
+    vertex_t v21 = (vertex_t) {transform(m1, glms_vec3_scale(vc, r1)), transform_normal(m1, vc), colour};
 
     vertex_t triangles[] = {
         v0, v1, v01,
@@ -172,7 +179,32 @@ static void add_cylinder(vec_vertex_t * vertices, mat4s m0, float r0, mat4s m1, 
     assert(sizeof(triangles) / sizeof(vertex_t) == N);
 
     for (int i = 0; i < N; i++) {
-    	vec_vertex_t_push_back(vertices, triangles[i]);
+        vec_vertex_t_push_back(vertices, triangles[i]);
+    }
+}
+
+static void add_leaves(vec_vertex_t * vertices, mat4s mat, float radius) {
+    // a 2D triangle
+    const float pi = 3.1416f;
+    float a = cos(pi / 3.0f);
+    float b = sin(pi / 3.0f);
+    vec3s c[3] = {
+        (vec3s){0.0f, 0.0f, -1.0f},
+        (vec3s){  -b, 0.0f,     a},
+        (vec3s){   b, 0.0f,     a}
+    };
+    vec3s normal = transform_normal(mat, (vec3s){0.0f, 1.0f, 0.0f});
+    vec3s colour = (vec3s){0.2f, 1.0f, 0.2f};
+    const float s = 0.1f;
+
+    // at three points around the branch we add a leaf composed of a single triangle
+    for(int i = 0; i < 3; i++) { 
+        vec3s p = glms_vec3_scale(c[i], radius + s * 1.5);
+        for (int j = 0; j < 3; j++) {
+            vec3s t = glms_vec3_add(p, glms_vec3_scale(c[j], s));
+            vertex_t v = (vertex_t) {transform(mat, t), normal, colour};
+            vec_vertex_t_push_back(vertices, v);
+        }
     }
 }
 
@@ -183,6 +215,11 @@ void renderer_clear_vertices(renderer_t * renderer) {
 void renderer_add_cylinder(renderer_t * renderer, mat4s m0, float r0, mat4s m1, float r1) {
     add_cylinder(&renderer->vertices, m0, r0, m1, r1);
 }
+
+void renderer_add_leaves(renderer_t * renderer, mat4s mat, float radius) {
+    add_leaves(&renderer->vertices, mat, radius);
+} 
+
 
 void renderer_upload_vertices(renderer_t * renderer) {
     size_t size = 
