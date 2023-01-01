@@ -11,7 +11,11 @@ void renderer_clear_vertices(renderer_t * renderer);
 
 void renderer_add_cylinder(renderer_t * renderer, mat4s m0, float r0, mat4s m1, float r1); 
 
-void renderer_add_leaves(renderer_t * renderer, mat4s mat, float radius); 
+void renderer_add_leaves(renderer_t * renderer, mat4s mat, float radius);
+ 
+void renderer_add_contact_shadow(renderer_t * renderer, vec3s origin, float radius); 
+
+void renderer_add_ground_plane(renderer_t * renderer, float radius); 
 
 void renderer_upload_vertices(renderer_t * renderer); 
 

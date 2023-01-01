@@ -42,6 +42,8 @@ typedef struct path_s {
 
 typedef struct tree_s {
     bool has_leader; 
+    vec3s origin;
+    float radius;
 } tree_t;
 
 #define POD
@@ -111,11 +113,16 @@ void init(app_t * app) {
                             glms_vec3_add(
                                 (vec3s){x, 0.0f, z},
                                 (vec3s){-off, 0.0f, -off}),
-                            3.0f));
+                            2.0f));
             root_pos.y = 0.0f;
             path_t path = create_shoot(root_pos, tree);
             vec_path_t_push_back(&app->paths, path);
-            vec_tree_t_push_back(&app->trees, (tree_t){.has_leader = true});
+            vec_tree_t_push_back(&app->trees, 
+                (tree_t){
+                    .has_leader = true,
+                    .origin = root_pos,
+                    .radius = 0.0f
+            });
         }
     }
 
@@ -174,7 +181,16 @@ void new_paths(vec_path_t * paths, vec_tree_t * trees) {
             int n = rand_prob(path->is_leader ? 0.2f : 0.05f) ? 2 : 1;
             float radius = 0.01f;
             float radii[] = {radius, radius};
-            bool has_leader = vec_tree_t_at(trees, path->tree)->has_leader;
+            tree_t * tree = vec_tree_t_at(trees, path->tree);
+            
+            vec3s position = path->position;
+            float horiz_dist_from_root = glms_vec3_norm(
+                glms_vec3_sub(
+                    (vec3s){position.x, 0.0f, position.z},
+                    tree->origin));
+            tree->radius = tree->radius > horiz_dist_from_root ? tree->radius : horiz_dist_from_root;
+
+            bool has_leader = tree->has_leader;
             bool child_is_leader = path->is_leader && has_leader;
             bool is_leader[] = {child_is_leader, false};
             if (path->is_leader && !child_is_leader) {
@@ -221,6 +237,11 @@ void new_geometry(app_t * app) {
         path_t *last_path = vec_path_t_at(&app->paths, path->last_path);
         add_cylinder(app->renderer, last_path, path);
     }
+    foreach(vec_tree_t, &app->trees, it) {
+        tree_t *tree = it.ref;
+        renderer_add_contact_shadow(app->renderer, tree->origin, tree->radius);
+    }
+    renderer_add_ground_plane(app->renderer, 60.0f);
 }
 
 void update(app_t * app) {

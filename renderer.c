@@ -208,6 +208,25 @@ static void add_leaves(vec_vertex_t * vertices, mat4s mat, float radius) {
     }
 }
 
+static void add_horiz_triangle(vec_vertex_t * vertices, vec3s origin, float radius,
+        vec3s colour) {
+    // a 2D triangle
+    const float pi = 3.1416f;
+    float a = cos(pi / 3.0f);
+    float b = sin(pi / 3.0f);
+    vec3s c[3] = {
+        (vec3s){0.0f, 0.0f, -1.0f},
+        (vec3s){  -b, 0.0f,     a},
+        (vec3s){   b, 0.0f,     a}
+    };
+    vec3s normal = (vec3s){0.0f, 1.0f, 0.0f};
+    for(int i = 0; i < 3; i++) { 
+        vec3s t = glms_vec3_add(origin, glms_vec3_scale(c[i], radius));
+        vertex_t v = (vertex_t) {t, normal, colour};
+        vec_vertex_t_push_back(vertices, v);
+    }
+}
+
 void renderer_clear_vertices(renderer_t * renderer) {
     vec_vertex_t_clear(&renderer->vertices);
 }
@@ -220,6 +239,14 @@ void renderer_add_leaves(renderer_t * renderer, mat4s mat, float radius) {
     add_leaves(&renderer->vertices, mat, radius);
 } 
 
+void renderer_add_contact_shadow(renderer_t * renderer, vec3s origin, float radius) {
+    add_horiz_triangle(&renderer->vertices, origin, radius, (vec3s){0.6f, 0.6f, 0.6f});
+} 
+
+void renderer_add_ground_plane(renderer_t * renderer, float radius) {
+    add_horiz_triangle(&renderer->vertices, (vec3s){0.0f, -0.1f, 0.0f},
+        radius, (vec3s){0.7f, 0.7f, 0.7f});
+}
 
 void renderer_upload_vertices(renderer_t * renderer) {
     size_t size = 
