@@ -141,7 +141,7 @@ renderer_t * renderer_init(int width, int height) {
     renderer->pass_action = (sg_pass_action){ 0 };
 
     /* view-projection matrix */
-    mat4s proj = glms_perspective(glm_rad(60.0f), (float)width/(float)height, 0.01f, 10.0f);
+    mat4s proj = glms_perspective(glm_rad(60.0f), (float)width/(float)height, 0.5f, 20.0f);
     mat4s view = glms_lookat((vec3s){0.0f, 2.5f, 6.0f}, (vec3s){0.0f, 1.0f, 0.0f}, (vec3s){0.0f, 1.0f, 0.0f});
     renderer->view_proj = glms_mat4_mul(proj, view);
 

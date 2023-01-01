@@ -19,6 +19,7 @@ typedef struct path_s {
     bool is_leader;
     bool is_leaf;
     size_t last_path;
+    size_t tree;
 } path_t;
 
 #define POD
@@ -26,15 +27,36 @@ typedef struct path_s {
 #define T path_t
 #include <ctl/vector.h>
 
+typedef struct tree_s {
+    bool has_leader; 
+} tree_t;
+
+#define POD
+#define NOT_INTEGRAL
+#define T tree_t
+#include <ctl/vector.h>
+
 typedef struct {
     GLFWwindow * window;
     long frame;
     renderer_t *renderer;
     bool is_growing;
-    bool has_leader;
+    size_t num_trees;
+    vec_tree_t trees;
     vec_path_t paths;
 } app_t;
 
+path_t create_shoot(vec3s origin, size_t tree) {
+    return (path_t){
+        .position =  glms_vec3_add(origin, (vec3s){.x = 0, .y = 0.0f, .z = 0.0f}),
+        .direction = (vec3s){.x = 0, .y = 0.1f, .z = 0.0f},
+        .up =  (vec3s){.x =  0, .y = 0.0f, .z = 1.0f},
+        .radius = 0.01f,
+        .is_leader = true,
+        .is_leaf = true,
+        .tree = tree
+    };
+}
 
 void init(app_t * app) {
     const int WIDTH = 800;
@@ -53,15 +75,30 @@ void init(app_t * app) {
 
     renderer_t * renderer = renderer_init(WIDTH, HEIGHT);
 
-    int num_paths = 1000;
     *app = (app_t){
         .frame = 0,
         .window = w,
-    .renderer = renderer,
-    .paths = vec_path_t_init(),
+        .renderer = renderer,
+        .num_trees = 16,
+        .trees = vec_tree_t_init(),
+        .paths = vec_path_t_init(),
         .is_growing = true,
-        .has_leader = true,
     };
+
+    int A = (int)sqrt(app->num_trees);
+
+    for(int x = 0; x < A; x++) {
+        for(int z = 0; z < A; z++) {
+            int tree = x * A + z;
+            vec3s root_pos = glms_vec3_scale((vec3s){x - A/2, 0.0f, z - A/2}, 3.0f);
+            root_pos = glms_vec3_add(root_pos, rand_vec(1.0f));
+            root_pos.y = 0.0f;
+            path_t path = create_shoot(root_pos, tree);
+            vec_path_t_push_back(&app->paths, path);
+            vec_tree_t_push_back(&app->trees, (tree_t){.has_leader = true});
+        }
+    }
+
 }
 
 bool should_quit(app_t * app) {
@@ -95,37 +132,20 @@ void new_path(vec_path_t * paths, const size_t parent_index, path_t * child, flo
         .radius = radius,
         .is_leader = is_leader,
         .is_leaf = true,
+        .tree = parent->tree,
         .last_path = parent_index
     };
 }
 
-void radial_growth(vec_path_t * paths, bool has_leader) {
+void radial_growth(vec_path_t * paths, vec_tree_t * trees) {
     foreach(vec_path_t, paths, it) {
         path_t *path = it.ref;
+        bool has_leader = vec_tree_t_at(trees, path->tree)->has_leader;
         path->radius += path->is_leader || !has_leader ? 0.001f : 0.0001f;
     }
 }
 
-path_t the_shoot() {
-    return (path_t){
-        .position =  (vec3s){.x = 0, .y = 0.0f, .z = 0.0f},
-        .direction = (vec3s){.x = 0, .y = 0.1f, .z = 0.0f},
-        .up =  (vec3s){.x =  0, .y = 0.0f, .z = 1.0f},
-        .radius = 0.01f,
-        .is_leader = true,
-        .is_leaf = true,
-    };
-}
-
-bool new_paths(vec_path_t * paths, bool has_leader) {
-    if (vec_path_t_empty(paths)) {
-        path_t path = the_shoot();
-    vec_path_t_push_back(paths, path);
-        path_t *p = vec_path_t_back(paths);
-    p->last_path = 0;
-    return true;
-    }
-
+bool new_paths(vec_path_t * paths, vec_tree_t * trees) {
     const int num_paths = vec_path_t_size(paths);
     for(int i = 0; i < num_paths; i++) {
         path_t *path = vec_path_t_at(paths, i);
@@ -134,6 +154,7 @@ bool new_paths(vec_path_t * paths, bool has_leader) {
             int n = rand_prob(path->is_leader ? 0.2f : 0.05f) ? 2 : 1;
             float radius = 0.01f;
             float radii[] = {radius, radius};
+            bool has_leader = vec_tree_t_at(trees, path->tree)->has_leader;
             bool child_is_leader = path->is_leader && has_leader;
             bool is_leader[] = {child_is_leader, false};
             if (path->is_leader && !child_is_leader) {
@@ -148,7 +169,7 @@ bool new_paths(vec_path_t * paths, bool has_leader) {
             }
 
             for (int j = 0; j < n; j++) {
-        vec_path_t_push_back(paths, (path_t){});
+                vec_path_t_push_back(paths, (path_t){});
                 new_path(paths, i, vec_path_t_back(paths), radii[j], is_leader[j],
                         has_leader);
             }
@@ -190,9 +211,12 @@ void update(app_t * app) {
         return;
     }
 
-    radial_growth(&app->paths, app->has_leader);
-    app->has_leader = app->has_leader && rand_prob(0.98f);
-    bool is_growing = new_paths(&app->paths, app->has_leader);
+    radial_growth(&app->paths, &app->trees);
+    foreach(vec_tree_t, &app->trees, it) {
+        tree_t *tree = it.ref;
+        tree->has_leader = tree->has_leader && rand_prob(0.98f);
+    }
+    bool is_growing = new_paths(&app->paths, &app->trees);
     if (!is_growing && app->is_growing) {
         printf("stopped growing\n");
     }
