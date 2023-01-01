@@ -1,5 +1,4 @@
 CFLAGS= -g \
-	-std=c11 \
 	-I../cglm/include \
 	-I../ctl \
 	-I../sokol \

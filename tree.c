@@ -9,6 +9,19 @@
 #include <string.h>
 #include <time.h>
 
+typedef struct timespec timespec_t;
+
+timespec_t now() {
+    timespec_t now;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now);
+    return now;
+}
+
+long elapsed_ns(timespec_t start) {
+    timespec_t end = now();
+    return (long)(end.tv_sec - start.tv_sec) * 1e9 + (end.tv_nsec - start.tv_nsec);
+}
+
 struct path_s;
 
 typedef struct path_s {
@@ -86,12 +99,19 @@ void init(app_t * app) {
     };
 
     int A = (int)sqrt(app->num_trees);
+    float off = (A - 1.0f) / 2.0f;
 
     for(int x = 0; x < A; x++) {
         for(int z = 0; z < A; z++) {
             int tree = x * A + z;
-            vec3s root_pos = glms_vec3_scale((vec3s){x - A/2, 0.0f, z - A/2}, 3.0f);
-            root_pos = glms_vec3_add(root_pos, rand_vec(1.0f));
+            vec3s root_pos =
+                    glms_vec3_add(
+                        rand_vec(1.0f), 
+                        glms_vec3_scale(
+                            glms_vec3_add(
+                                (vec3s){x, 0.0f, z},
+                                (vec3s){-off, 0.0f, -off}),
+                            3.0f));
             root_pos.y = 0.0f;
             path_t path = create_shoot(root_pos, tree);
             vec_path_t_push_back(&app->paths, path);
@@ -145,7 +165,7 @@ void radial_growth(vec_path_t * paths, vec_tree_t * trees) {
     }
 }
 
-bool new_paths(vec_path_t * paths, vec_tree_t * trees) {
+void new_paths(vec_path_t * paths, vec_tree_t * trees) {
     const int num_paths = vec_path_t_size(paths);
     for(int i = 0; i < num_paths; i++) {
         path_t *path = vec_path_t_at(paths, i);
@@ -175,7 +195,6 @@ bool new_paths(vec_path_t * paths, vec_tree_t * trees) {
             }
         }
     }
-    return true;
 }
 
 void add_cylinder(renderer_t * renderer, const path_t * last_path, const path_t * path) {
@@ -211,18 +230,26 @@ void update(app_t * app) {
         return;
     }
 
+    if (!app->is_growing) {
+        return;
+    }
+
+    timespec_t start = now();
+
     radial_growth(&app->paths, &app->trees);
     foreach(vec_tree_t, &app->trees, it) {
         tree_t *tree = it.ref;
         tree->has_leader = tree->has_leader && rand_prob(0.98f);
     }
-    bool is_growing = new_paths(&app->paths, &app->trees);
-    if (!is_growing && app->is_growing) {
-        printf("stopped growing\n");
-    }
-    app->is_growing = is_growing;
+    new_paths(&app->paths, &app->trees);
     new_geometry(app);
     renderer_upload_vertices(app->renderer);
+    
+    if (elapsed_ns(start) > 1e8) {
+        // stop growing if taking more thn 100ms
+        printf("stopped growing\n");
+        app->is_growing = false;
+    }
 }
 
 void render(app_t * app) {
