@@ -4,6 +4,9 @@
 #define SOKOL_GLES3
 #include "sokol_gfx.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #include <stdio.h>
 #include <string.h>
 /* a uniform block with a model-view-projection matrix */
@@ -27,12 +30,25 @@ typedef struct {
 #include <ctl/vector.h>
 
 typedef struct {
+    vec2s offset;
+    float scale;
+} atlas_t;
+
+typedef enum object_type_e {
+    GROUND,
+    TREE,
+    LEAF,
+    SHADOW,
+    MAX_OBJECT_TYPE
+} object_type_e;
+
+typedef struct {
     long frame;
-    vec_vertex_t vertices;
+    vec_vertex_t vertices[MAX_OBJECT_TYPE];
     int floats_per_vertex;
-    vec_uint8_t pixels;
-    sg_image img;
-    sg_bindings bind;
+    vec_uint8_t pixels[MAX_OBJECT_TYPE];
+    sg_image img[MAX_OBJECT_TYPE];
+    sg_bindings bind[MAX_OBJECT_TYPE];;
     sg_pipeline pip;
     sg_pass_action pass_action;
     mat4s view_proj;
@@ -40,10 +56,55 @@ typedef struct {
     float ry;
 } renderer_t;
 
+// recursively subdivide the image, assumes the source is power of two square
+sg_image_desc mip_chain(size_t dim, uint8_t *data, vec_uint8_t *output) {
+    size_t width = dim;
+    // a mip map chain always fits in twice the original size
+    vec_uint8_t_resize(output, dim * dim * 4 * 2, 0);
+    uint8_t *p = vec_uint8_t_data(output);
+    memcpy(p, data, dim * dim * 4);
+    int num_mipmaps = 0;
+    sg_image_data img_data;
+    do {
+        size_t size = dim * dim * 4;
+        img_data.subimage[0][num_mipmaps].ptr = p;
+        img_data.subimage[0][num_mipmaps].size = size;
+        num_mipmaps += 1;
+        uint8_t * src = p;
+        p += size;
+        dim = dim >> 1;
+        for (size_t y = 0; y < dim; y++) {
+            for (size_t x = 0; x < dim; x++) {
+                for (size_t k = 0; k < 4; k++) {
+                    size_t s00 = k + (x * 2 + y * 2 * dim) * 4; 
+                    p[k + (x + y * dim) * 4] =
+                        (src[s00] +
+                        src[s00 + 4] +
+                        src[s00 + 2 * dim * 4] +
+                        src[s00 + 2 * dim * 4 + 4]) / 4;
+                }
+            }
+        }
+    } while(dim > 0);
+
+    sg_image_desc img_desc = {
+        .width = width,
+        .height = width,
+        .num_mipmaps = num_mipmaps,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .mag_filter = SG_FILTER_LINEAR,
+        .min_filter = SG_FILTER_LINEAR_MIPMAP_LINEAR,
+        .data = img_data
+    };
+    return img_desc;
+}
+
 void renderer_free(renderer_t ** renderer) {
     if (*renderer) {
-        vec_vertex_t_free(&(*renderer)->vertices);
-        vec_uint8_t_free(&(*renderer)->pixels);
+        for (int i = 0; i < MAX_OBJECT_TYPE; i++) {
+            vec_vertex_t_free(&(*renderer)->vertices[i]);
+            vec_uint8_t_free(&(*renderer)->pixels[i]);
+        }
         sg_shutdown();
         free(*renderer);
         *renderer = NULL;
@@ -61,51 +122,25 @@ renderer_t * renderer_init(int width, int height) {
     *renderer = (renderer_t){
         .frame = 0,
         .floats_per_vertex = sizeof(vertex_t) / sizeof(float),
-        .vertices = vec_vertex_t_init(),
-        .pixels = vec_uint8_t_init()
     };
 
-    vec_uint8_t_resize(&renderer->pixels, 256*256*4, 0);
-
-    uint8_t *p = vec_uint8_t_data(&renderer->pixels);
-    for(int i = 0; i < 256 * 256 * 4; i++) {
-        *p++ = rand() % 256;
-    }
-
-    sg_image_data img_data;
-    img_data.subimage[0][0].ptr = vec_uint8_t_data(&renderer->pixels);
-    img_data.subimage[0][0].size = vec_uint8_t_size(&renderer->pixels);
-
-    sg_image_desc img_desc = {
-        .width = 256,
-        .height = 256,
-        .num_mipmaps = 1,
-        .pixel_format = SG_PIXELFORMAT_RGBA8,
-        .mag_filter = SG_FILTER_LINEAR,
-        .min_filter = SG_FILTER_LINEAR,
-        .data = img_data
+    char texture_file[MAX_OBJECT_TYPE][32] = {
+        "mud.png",
+        "bark.png",
+        "leaf.png",
+        "contact_shadow.png"
     };
-    renderer->img = sg_make_image(&img_desc);
- 
-/*
-    // create an index buffer for the cube
-    uint16_t indices[] = {
-        0, 1, 2,  0, 2, 3,
-        6, 5, 4,  7, 6, 4,
-        8, 9, 10,  8, 10, 11,
-        14, 13, 12,  15, 14, 12,
-        16, 17, 18,  16, 18, 19,
-        22, 21, 20,  23, 22, 20
-    };
-    sg_buffer ibuf = sg_make_buffer(&(sg_buffer_desc){
-        .type = SG_BUFFERTYPE_INDEXBUFFER,
-        .data = SG_RANGE(indices)
-    });
 
-    // resource bindings struct
-    app->bind = (sg_bindings){
-        .index_buffer = ibuf
-    };*/
+    for (int i = 0; i < MAX_OBJECT_TYPE; i++) {
+        renderer->vertices[i] = vec_vertex_t_init();
+        renderer->pixels[i] = vec_uint8_t_init();
+
+        int x,y,n;
+        uint8_t *data = stbi_load(texture_file[i], &x, &y, &n, 4);
+        sg_image_desc img_desc = mip_chain(x, data, &renderer->pixels[i]);
+        renderer->img[i] = sg_make_image(&img_desc);
+        stbi_image_free(data);
+    } 
 
     /* create shader */
     sg_shader shd = sg_make_shader(&(sg_shader_desc) {
@@ -142,8 +177,8 @@ renderer_t * renderer_init(int width, int height) {
                 "out vec4 frag_color;\n"
                 "void main() {\n"
                 "  vec3 light_dir = vec3(0.5, -0.5, 0.0);\n"
-                "  vec3 light_colour = vec3(0.9, 0.9, 0.7);\n"
-                "  vec3 ambient_colour = vec3(0.7, 0.9, 0.9);\n"
+                "  vec3 light_colour = vec3(1.9, 1.9, 1.7);\n"
+                "  vec3 ambient_colour = vec3(1.9, 1.9, 1.9);\n"
                 "  float lambert = dot(light_dir, vnormal);\n"
                 "  vec4 colour = texture(tex, uv);\n"
                 "  frag_color = colour * vec4(lambert * light_colour + ambient_colour, 1.0);\n"
@@ -168,8 +203,15 @@ renderer_t * renderer_init(int width, int height) {
             .compare = SG_COMPAREFUNC_LESS_EQUAL,
             .write_enabled = true,
         },
+        .colors[0] = {
+            .blend = {
+                .src_factor_rgb =  SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .enabled = true
+            }
+        },
         .face_winding = SG_FACEWINDING_CCW,
-        .cull_mode = SG_CULLMODE_BACK,
+        //.cull_mode = SG_CULLMODE_BACK,
     });
 
     /* default pass action */
@@ -241,7 +283,8 @@ static void add_leaves(vec_vertex_t * vertices, mat4s mat, float radius) {
     }
 }
 
-static void add_horiz_triangle(vec_vertex_t * vertices, vec3s origin, float radius) {
+static void add_horiz_triangle(vec_vertex_t * vertices, vec3s origin, float radius,
+        atlas_t tex) {
     // a 2D triangle
     const float pi = 3.1416f;
     float a = cos(pi / 3.0f);
@@ -254,46 +297,61 @@ static void add_horiz_triangle(vec_vertex_t * vertices, vec3s origin, float radi
     vec3s normal = (vec3s){0.0f, 1.0f, 0.0f};
     for(int i = 0; i < 3; i++) { 
         vec3s t = glms_vec3_add(origin, glms_vec3_scale(c[i], radius));
-        vertex_t v = (vertex_t) {t, normal, (vec2s){c[i].x, c[i].z}};
+        vec2s uv = glms_vec2_add(tex.offset,
+                    glms_vec2_add((vec2s){0.5f, 0.5f}, 
+                        glms_vec2_scale((vec2s){c[i].x, c[i].z}, tex.scale * 0.5f)));
+        vertex_t v = (vertex_t) {t, normal, uv};
         vec_vertex_t_push_back(vertices, v);
     }
 }
 
 void renderer_clear_vertices(renderer_t * renderer) {
-    vec_vertex_t_clear(&renderer->vertices);
+    for (int i = 0; i < MAX_OBJECT_TYPE; i++) {
+        vec_vertex_t_clear(&renderer->vertices[i]);
+    }
 }
 
 void renderer_add_cylinder(renderer_t * renderer, mat4s m0, float r0, mat4s m1, float r1) {
-    add_cylinder(&renderer->vertices, m0, r0, m1, r1);
+    add_cylinder(&renderer->vertices[TREE], m0, r0, m1, r1);
 }
 
 void renderer_add_leaves(renderer_t * renderer, mat4s mat, float radius) {
-    add_leaves(&renderer->vertices, mat, radius);
+    add_leaves(&renderer->vertices[LEAF], mat, radius);
 } 
 
 void renderer_add_contact_shadow(renderer_t * renderer, vec3s origin, float radius) {
-    add_horiz_triangle(&renderer->vertices, origin, radius);
+    add_horiz_triangle(&renderer->vertices[SHADOW], origin, radius,
+        (atlas_t){.scale = 1.0f});
 } 
 
 void renderer_add_ground_plane(renderer_t * renderer, float radius) {
-    add_horiz_triangle(&renderer->vertices, (vec3s){0.0f, -0.1f, 0.0f},
-        radius);
+    add_horiz_triangle(&renderer->vertices[GROUND], (vec3s){0.0f, -0.1f, 0.0f},
+        radius, (atlas_t){.scale = radius * 0.25f });
+}
+
+static void upload_vertices(int floats_per_vertex, int frame, vec_vertex_t *vertices, 
+        sg_bindings *bind, sg_image *image) {
+    size_t size = 
+        vec_vertex_t_size(vertices) * floats_per_vertex * sizeof(float);
+
+    if (frame > 0) {
+        sg_destroy_buffer(bind->vertex_buffers[0]);
+    }
+    sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
+        .data = (sg_range){vec_vertex_t_data(vertices), size}
+    });
+    *bind = (sg_bindings) {
+        .vertex_buffers[0] = vbuf,
+        .fs_images[0] = *image
+    };
 }
 
 void renderer_upload_vertices(renderer_t * renderer) {
-    size_t size = 
-        vec_vertex_t_size(&renderer->vertices) * renderer->floats_per_vertex * sizeof(float);
-
-    if (renderer->frame > 0) {
-        sg_destroy_buffer(renderer->bind.vertex_buffers[0]);
+    for (int i = 0; i < MAX_OBJECT_TYPE; i++) {
+        upload_vertices(renderer->floats_per_vertex, 
+            renderer->frame, &renderer->vertices[i], 
+            &renderer->bind[i], &renderer->img[i]);
     }
-    sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .data = (sg_range){vec_vertex_t_data(&renderer->vertices), size}
-    });
-    renderer->bind = (sg_bindings) {
-        .vertex_buffers[0] = vbuf,
-        .fs_images[0] = renderer->img
-    };
 }
 
 void renderer_update(renderer_t * renderer) {
@@ -313,9 +371,11 @@ void renderer_render(renderer_t * renderer, int cur_width, int cur_height) {
 
     sg_begin_default_pass(&renderer->pass_action, cur_width, cur_height);
     sg_apply_pipeline(renderer->pip);
-    sg_apply_bindings(&renderer->bind);
     sg_apply_uniforms(SG_SHADERSTAGE_VS, 0, &SG_RANGE(vs_params));
-    sg_draw(0, vec_vertex_t_size(&renderer->vertices), 1);
+    for (int i = 0; i < MAX_OBJECT_TYPE; i++) {
+        sg_apply_bindings(&renderer->bind[i]);
+        sg_draw(0, vec_vertex_t_size(&renderer->vertices[i]), 1);
+    }
     sg_end_pass();
     sg_commit();
     renderer->frame++;
