@@ -14,7 +14,7 @@ typedef struct {
 typedef struct {
     vec3s position;
     vec3s normal;
-    vec3s colour;
+    vec2s texcoord;
 } vertex_t;
 
 #define POD
@@ -22,10 +22,16 @@ typedef struct {
 #define T vertex_t
 #include <ctl/vector.h>
 
+#define POD
+#define T uint8_t
+#include <ctl/vector.h>
+
 typedef struct {
     long frame;
     vec_vertex_t vertices;
     int floats_per_vertex;
+    vec_uint8_t pixels;
+    sg_image img;
     sg_bindings bind;
     sg_pipeline pip;
     sg_pass_action pass_action;
@@ -37,6 +43,7 @@ typedef struct {
 void renderer_free(renderer_t ** renderer) {
     if (*renderer) {
         vec_vertex_t_free(&(*renderer)->vertices);
+        vec_uint8_t_free(&(*renderer)->pixels);
         sg_shutdown();
         free(*renderer);
         *renderer = NULL;
@@ -54,9 +61,32 @@ renderer_t * renderer_init(int width, int height) {
     *renderer = (renderer_t){
         .frame = 0,
         .floats_per_vertex = sizeof(vertex_t) / sizeof(float),
-        .vertices = vec_vertex_t_init()
+        .vertices = vec_vertex_t_init(),
+        .pixels = vec_uint8_t_init()
     };
 
+    vec_uint8_t_resize(&renderer->pixels, 256*256*4, 0);
+
+    uint8_t *p = vec_uint8_t_data(&renderer->pixels);
+    for(int i = 0; i < 256 * 256 * 4; i++) {
+        *p++ = rand() % 256;
+    }
+
+    sg_image_data img_data;
+    img_data.subimage[0][0].ptr = vec_uint8_t_data(&renderer->pixels);
+    img_data.subimage[0][0].size = vec_uint8_t_size(&renderer->pixels);
+
+    sg_image_desc img_desc = {
+        .width = 256,
+        .height = 256,
+        .num_mipmaps = 1,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .mag_filter = SG_FILTER_LINEAR,
+        .min_filter = SG_FILTER_LINEAR,
+        .data = img_data
+    };
+    renderer->img = sg_make_image(&img_desc);
+ 
 /*
     // create an index buffer for the cube
     uint16_t indices[] = {
@@ -93,27 +123,32 @@ renderer_t * renderer_init(int width, int height) {
             "uniform mat4 mvp;\n"
             "layout(location=0) in vec4 position;\n"
             "layout(location=1) in vec3 normal;\n"
-            "layout(location=2) in vec3 colour;\n"
+            "layout(location=2) in vec2 texcoord;\n"
             "out vec3 vnormal;\n" 
-            "out vec3 vcolour;\n" 
+            "out vec2 uv;\n" 
             "void main() {\n"
             "  vnormal = normal;\n"
-            "  vcolour = colour;\n"
+            "  uv = texcoord;\n"
             "  gl_Position = mvp * position;\n"
             "}\n",
-        .fs.source =
-            "#version 310 es\n"
-            "precision mediump float;\n"
-            "in vec3 vnormal;\n"
-            "in vec3 vcolour;\n"
-            "out vec4 frag_color;\n"
-            "void main() {\n"
-            "  vec3 light_dir = vec3(0.5, -0.5, 0.0);\n"
-            "  vec3 light_colour = vec3(0.9, 0.9, 0.7);\n"
-            "  vec3 ambient_colour = vec3(0.7, 0.9, 0.9);\n"
-            "  float lambert = dot(light_dir, vnormal);\n"
-            "  frag_color = vec4(vcolour * (lambert * light_colour + ambient_colour), 1.0);\n"
-            "}\n"
+        .fs = {
+            .images[0] = { .name="tex", .image_type = SG_IMAGETYPE_2D },
+            .source =
+                "#version 310 es\n"
+                "precision mediump float;\n"
+                "uniform sampler2D tex;"
+                "in vec3 vnormal;\n"
+                "in vec2 uv;\n"
+                "out vec4 frag_color;\n"
+                "void main() {\n"
+                "  vec3 light_dir = vec3(0.5, -0.5, 0.0);\n"
+                "  vec3 light_colour = vec3(0.9, 0.9, 0.7);\n"
+                "  vec3 ambient_colour = vec3(0.7, 0.9, 0.9);\n"
+                "  float lambert = dot(light_dir, vnormal);\n"
+                "  vec4 colour = texture(tex, uv);\n"
+                "  frag_color = colour * vec4(lambert * light_colour + ambient_colour, 1.0);\n"
+                "}\n"
+        }
     });
 
     /* create pipeline object */
@@ -124,7 +159,7 @@ renderer_t * renderer_init(int width, int height) {
             .attrs = {
                 [0].format=SG_VERTEXFORMAT_FLOAT3,
                 [1].format=SG_VERTEXFORMAT_FLOAT3,
-                [2].format=SG_VERTEXFORMAT_FLOAT3,
+                [2].format=SG_VERTEXFORMAT_FLOAT2,
             }
         },
         .shader = shd,
@@ -158,15 +193,14 @@ static void add_cylinder(vec_vertex_t * vertices, mat4s m0, float r0, mat4s m1, 
     vec3s va = (vec3s){0.0f, 0.0f, -1.0f};
     vec3s vb = (vec3s){  -b, 0.0f,     a};
     vec3s vc = (vec3s){   b, 0.0f,     a};
-    vec3s colour = (vec3s){1.0f, 1.0f, 1.0f};
  
     // a three sided cylinder
-    vertex_t v0 =  (vertex_t) {transform(m0, glms_vec3_scale(va, r0)), transform_normal(m0, va), colour};
-    vertex_t v1 =  (vertex_t) {transform(m0, glms_vec3_scale(vb, r0)), transform_normal(m0, vb), colour};
-    vertex_t v2 =  (vertex_t) {transform(m0, glms_vec3_scale(vc, r0)), transform_normal(m0, vc), colour};
-    vertex_t v01 = (vertex_t) {transform(m1, glms_vec3_scale(va, r1)), transform_normal(m1, va), colour}; 
-    vertex_t v11 = (vertex_t) {transform(m1, glms_vec3_scale(vb, r1)), transform_normal(m1, vb), colour};
-    vertex_t v21 = (vertex_t) {transform(m1, glms_vec3_scale(vc, r1)), transform_normal(m1, vc), colour};
+    vertex_t v0 =  (vertex_t) {transform(m0, glms_vec3_scale(va, r0)), transform_normal(m0, va), (vec2s){0.0f, 0.0f}};
+    vertex_t v1 =  (vertex_t) {transform(m0, glms_vec3_scale(vb, r0)), transform_normal(m0, vb), (vec2s){0.5f, 0.0f}};
+    vertex_t v2 =  (vertex_t) {transform(m0, glms_vec3_scale(vc, r0)), transform_normal(m0, vc), (vec2s){1.0f, 0.0f}};
+    vertex_t v01 = (vertex_t) {transform(m1, glms_vec3_scale(va, r1)), transform_normal(m1, va), (vec2s){0.0f, 1.0f}}; 
+    vertex_t v11 = (vertex_t) {transform(m1, glms_vec3_scale(vb, r1)), transform_normal(m1, vb), (vec2s){0.5f, 1.0f}};
+    vertex_t v21 = (vertex_t) {transform(m1, glms_vec3_scale(vc, r1)), transform_normal(m1, vc), (vec2s){1.0f, 1.0f}};
 
     vertex_t triangles[] = {
         v0, v1, v01,
@@ -194,7 +228,6 @@ static void add_leaves(vec_vertex_t * vertices, mat4s mat, float radius) {
         (vec3s){   b, 0.0f,     a}
     };
     vec3s normal = transform_normal(mat, (vec3s){0.0f, 1.0f, 0.0f});
-    vec3s colour = (vec3s){0.2f, 1.0f, 0.2f};
     const float s = 0.1f;
 
     // at three points around the branch we add a leaf composed of a single triangle
@@ -202,14 +235,13 @@ static void add_leaves(vec_vertex_t * vertices, mat4s mat, float radius) {
         vec3s p = glms_vec3_scale(c[i], radius + s * 1.5);
         for (int j = 0; j < 3; j++) {
             vec3s t = glms_vec3_add(p, glms_vec3_scale(c[j], s));
-            vertex_t v = (vertex_t) {transform(mat, t), normal, colour};
+            vertex_t v = (vertex_t) {transform(mat, t), normal, (vec2s){c[j].x, c[j].z}};
             vec_vertex_t_push_back(vertices, v);
         }
     }
 }
 
-static void add_horiz_triangle(vec_vertex_t * vertices, vec3s origin, float radius,
-        vec3s colour) {
+static void add_horiz_triangle(vec_vertex_t * vertices, vec3s origin, float radius) {
     // a 2D triangle
     const float pi = 3.1416f;
     float a = cos(pi / 3.0f);
@@ -222,7 +254,7 @@ static void add_horiz_triangle(vec_vertex_t * vertices, vec3s origin, float radi
     vec3s normal = (vec3s){0.0f, 1.0f, 0.0f};
     for(int i = 0; i < 3; i++) { 
         vec3s t = glms_vec3_add(origin, glms_vec3_scale(c[i], radius));
-        vertex_t v = (vertex_t) {t, normal, colour};
+        vertex_t v = (vertex_t) {t, normal, (vec2s){c[i].x, c[i].z}};
         vec_vertex_t_push_back(vertices, v);
     }
 }
@@ -240,12 +272,12 @@ void renderer_add_leaves(renderer_t * renderer, mat4s mat, float radius) {
 } 
 
 void renderer_add_contact_shadow(renderer_t * renderer, vec3s origin, float radius) {
-    add_horiz_triangle(&renderer->vertices, origin, radius, (vec3s){0.6f, 0.6f, 0.6f});
+    add_horiz_triangle(&renderer->vertices, origin, radius);
 } 
 
 void renderer_add_ground_plane(renderer_t * renderer, float radius) {
     add_horiz_triangle(&renderer->vertices, (vec3s){0.0f, -0.1f, 0.0f},
-        radius, (vec3s){0.7f, 0.7f, 0.7f});
+        radius);
 }
 
 void renderer_upload_vertices(renderer_t * renderer) {
@@ -259,7 +291,8 @@ void renderer_upload_vertices(renderer_t * renderer) {
         .data = (sg_range){vec_vertex_t_data(&renderer->vertices), size}
     });
     renderer->bind = (sg_bindings) {
-        .vertex_buffers[0] = vbuf
+        .vertex_buffers[0] = vbuf,
+        .fs_images[0] = renderer->img
     };
 }
 
