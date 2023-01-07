@@ -76,7 +76,7 @@ sg_image_desc mip_chain(size_t dim, uint8_t *data, vec_uint8_t *output) {
         for (size_t y = 0; y < dim; y++) {
             for (size_t x = 0; x < dim; x++) {
                 for (size_t k = 0; k < 4; k++) {
-                    size_t s00 = k + (x * 2 + y * 2 * dim) * 4; 
+                    size_t s00 = k + (x * 2 + y * 4 * dim) * 4; 
                     p[k + (x + y * dim) * 4] =
                         (src[s00] +
                         src[s00 + 4] +
